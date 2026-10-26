@@ -1,0 +1,44 @@
+name: OpenCPO CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate deployment repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile configure.py scripts/discord-announce.py
+
+      - name: Check shell syntax
+        run: |
+          bash -n install.sh
+          bash -n setup.sh
+          bash -n update.sh
+          bash -n uninstall.sh
+          bash -n scripts/db-utils.sh
+
+      - name: Validate Docker Compose configuration
+        env:
+          PG_PASSWORD: ci-only-placeholder-not-a-real-secret
+          MANAGEMENT_API_KEY: ci-only-placeholder-not-a-real-key
+        run: |
+          docker compose --env-file .env.example config -q

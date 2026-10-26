@@ -1,0 +1,144 @@
+services:
+
+  # ── Infrastructure ────────────────────────────────────────────────────────
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ocpp}
+      POSTGRES_USER: ${POSTGRES_USER:-ocpp}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-CHANGE_ME_IN_PROD}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ocpp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Core CSMS ─────────────────────────────────────────────────────────────
+
+  ocpp-core:
+    build: ./opencpo-core
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${OCPP_16_WS_PORT:-9100}:9100"   # OCPP 1.6 WebSocket
+      - "${OCPP_201_WS_PORT:-9201}:9201"  # OCPP 2.0.1 WebSocket
+      - "${OCPP_API_PORT:-8000}:8000"     # REST API
+    environment:
+      # Database
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_NAME: ${POSTGRES_DB:-ocpp}
+      PG_USER: ${POSTGRES_USER:-ocpp}
+      PG_PASSWORD: ${PG_PASSWORD:-CHANGE_ME_IN_PROD}
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # App
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      MANAGEMENT_API_KEY: ${MANAGEMENT_API_KEY:-CHANGE_ME_IN_PROD}
+      API_KEY: ${MANAGEMENT_API_KEY:-CHANGE_ME_IN_PROD}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost}
+      # Backup / update paths
+      UPDATE_SCRIPT: /app/opencpo/update.sh
+      BACKUP_DIR: /app/backups
+      DB_UTILS: /app/opencpo/scripts/db-utils.sh
+      CORE_API_PUBLIC_URL: ${CORE_API_PUBLIC_URL:-http://localhost:8000}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 7
+      start_period: 45s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./:/app/opencpo:rw
+      - backup-data:/app/backups
+
+  # ── Operator Dashboard ────────────────────────────────────────────────────
+
+  cpo-admin:
+    build: ./opencpo-admin
+    restart: unless-stopped
+    depends_on:
+      ocpp-core:
+        condition: service_healthy
+    ports:
+      - "${CPO_ADMIN_PORT:-8080}:8080"
+    environment:
+      OCPP_CORE_API: http://ocpp-core:8000
+      CORE_API_KEY: ${MANAGEMENT_API_KEY:-CHANGE_ME_IN_PROD}
+      JWT_SECRET: ${MANAGEMENT_API_KEY:-CHANGE_ME_IN_PROD}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost}
+      ORG_NAME: ${ORG_NAME:-My CPO}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Driver PWA ────────────────────────────────────────────────────────────
+
+  charge-app:
+    build: ./opencpo-charge-app
+    restart: unless-stopped
+    depends_on:
+      ocpp-core:
+        condition: service_healthy
+    ports:
+      - "${CHARGE_APP_PORT:-8003}:8003"
+    environment:
+      OCPP_CORE_API: http://ocpp-core:8000
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost}
+      SKIN: ${SKIN:-default}
+
+  # ── Compliance Tester ─────────────────────────────────────────────────────
+
+  compliance-tester:
+    build: ./opencpo-tester
+    restart: unless-stopped
+    ports:
+      - "${COMPLIANCE_PORT:-8090}:8090"
+    environment:
+      DEFAULT_WS_URL: ws://ocpp-core:9100
+
+  # ── Virtual Charger Farm ──────────────────────────────────────────────────
+
+  charger-farm:
+    build: ./opencpo-charger-farm
+    restart: unless-stopped
+    depends_on:
+      ocpp-core:
+        condition: service_healthy
+    ports:
+      - "${CHARGER_FARM_PORT:-8087}:8087"
+    environment:
+      OCPP16_URL: ws://ocpp-core:9100
+      OCPP201_URL: ws://ocpp-core:9201
+      FARM_UI_PORT: 8087
+
+volumes:
+  pgdata:
+    driver: local
+  backup-data:
+    driver: local
